@@ -1,0 +1,6 @@
+yfinance>=0.2.38
+sqlalchemy>=2.0.29
+pandas>=2.2.2
+numpy>=1.26.4
+fastapi>=0.111.0
+uvicorn>=0.30.1

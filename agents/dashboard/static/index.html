@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FUNDAMENTAL TERMINAL</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+</head>
+<body>
+
+<div class="terminal" id="terminal">
+
+  <!-- Top function bar -->
+  <div class="fn-bar">
+    <div class="fn-bar-brand">FUNDAMENTAL&nbsp;TERMINAL</div>
+    <div class="fn-bar-codes" id="fn-bar-codes"></div>
+    <div class="fn-bar-layout" id="fn-bar-layout">
+      <button class="layout-btn active" data-layout="1" onclick="setLayout('1')" title="1 panel">▣</button>
+      <button class="layout-btn" data-layout="2h" onclick="setLayout('2h')" title="2 panels side-by-side">▥</button>
+      <button class="layout-btn" data-layout="2v" onclick="setLayout('2v')" title="2 panels stacked">▤</button>
+      <button class="layout-btn" data-layout="4" onclick="setLayout('4')" title="4 panels">▦</button>
+    </div>
+  </div>
+
+  <!-- Workspace: panel grid -->
+  <div class="workspace layout-1" id="workspace"></div>
+
+  <!-- Command bar -->
+  <div class="cmd-bar" id="cmd-bar" style="position:relative;">
+    <span class="cmd-prompt" id="cmd-prompt">CMD&gt;</span>
+    <input type="text" class="cmd-input" id="cmd-input"
+           placeholder="Type a ticker and function code (e.g. AAPL FA, NVDA GIP, HEAT, HELP) and press ENTER"
+           autocomplete="off" spellcheck="false">
+    <button class="cmd-go" onclick="executeCommand()">EXEC ⏎</button>
+    <div class="cmd-suggest" id="cmd-suggest"></div>
+  </div>
+
+  <!-- Status bar -->
+  <div class="status-bar">
+    <div class="status-item">
+      <span class="session-pill closed" id="status-session">CLOSED</span>
+    </div>
+    <div class="status-item">
+      <span class="status-label">ET</span>
+      <span class="status-val amber" id="status-et">--:--:--</span>
+    </div>
+    <div class="status-item">
+      <span class="status-label">LAYOUT</span>
+      <span class="status-val" id="status-layout">1</span>
+    </div>
+    <div class="status-item">
+      <span class="status-label">PANEL</span>
+      <span class="status-val amber" id="status-panel">1</span>
+    </div>
+    <div class="status-item">
+      <span class="status-label">LAST</span>
+      <span class="status-val" id="status-last-cmd">—</span>
+    </div>
+    <div class="right">
+      <div class="status-item">
+        <span class="status-label">SHORTCUTS</span>
+        <span class="status-val"><span class="kbd">/</span>cmd <span class="kbd">⌘1-4</span>focus <span class="kbd">⌘L</span>layout <span class="kbd">F1</span>help</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">CONN</span>
+        <span class="status-val green" id="status-conn">●LIVE</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="dashboard.js"></script>
+</body>
+</html>
