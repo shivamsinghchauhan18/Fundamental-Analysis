@@ -4,13 +4,23 @@
 # Provisions:
 #   - A managed PostgreSQL instance (free tier; auto-expires after 90 days)
 #   - One web service running the FastAPI dashboard via Docker
-#   - On every deploy, preDeployCommand runs the full 10-agent seed pipeline
-#     so STAT / CORRP / MACRO / MC / GRAPHP / PEER / EVTS function codes
-#     have their TSLA/NVDA/PLTR analytics data populated.
+#
+# Seeding (free-tier compatible):
+#   The dashboard's FastAPI lifespan hook runs orchestrator/orchestrator.py
+#   on first boot if the DB is empty, populating the TSLA/NVDA/PLTR
+#   analytics tables that back STAT / CORRP / MACRO / MC / GRAPHP / PEER /
+#   EVTS. On warm boots the seed step is skipped (idempotent count check).
+#   This replaces preDeployCommand, which Render disallows on free tier.
+#
+# Port binding:
+#   Dockerfile's CMD uses shell-form `uvicorn ... --port ${PORT:-8000}`,
+#   so $PORT (injected by Render) is honored. startCommand is not used
+#   because Render's free Docker services disallow it.
 #
 # Free-tier caveats to share with students:
 #   - Web service sleeps after 15 min of inactivity; first request after a
-#     sleep takes ~30-60 s while the container cold-starts.
+#     sleep takes ~30-60 s while the container cold-starts. The very first
+#     deploy adds ~10-20 s on top for the seed.
 #   - Free PostgreSQL is deleted after 90 days. Re-deploy (or upgrade the
 #     plan) before the expiry to keep data persistent.
 
@@ -29,13 +39,6 @@ services:
     dockerContext: .
     healthCheckPath: /api/market-status
     autoDeploy: true
-
-    # Render injects $PORT; override the Dockerfile CMD to bind to it.
-    startCommand: uvicorn agents.dashboard.app:app --host 0.0.0.0 --port $PORT
-
-    # Seeds Postgres with the full pipeline analytics on every deploy.
-    # Idempotent: drops + recreates the TSLA/NVDA/PLTR analytics tables.
-    preDeployCommand: python orchestrator/orchestrator.py
 
     envVars:
       - key: DATABASE_URL

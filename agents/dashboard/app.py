@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Body, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import uvicorn
 import os
 import sys
@@ -9,6 +10,7 @@ import math
 import random
 import time
 import threading
+import subprocess
 from datetime import datetime, timedelta, timezone
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -19,7 +21,52 @@ from shared.models import (
     StatisticalFoundationData, CorrelationRiskData, GraphNetworkData, MacroIndicatorsData, PeerComparisonData
 )
 
-app = FastAPI(title="Fundamental Analysis Platform", description="Real-time stock analysis with live market data")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Ensure schema exists, then seed the deep-pipeline analytics if the DB is empty.
+    # Skipped on warm boots once data is present (idempotent check).
+    # On Render free tier this replaces preDeployCommand: first cold start spends
+    # ~10-20s seeding, subsequent starts skip it.
+    try:
+        init_db()
+    except Exception as e:
+        print(f"[lifespan] init_db failed: {e}", flush=True)
+    seeded = False
+    try:
+        db = SessionLocal()
+        seeded = db.query(HistoricalFinancials).count() > 0
+        db.close()
+    except Exception as e:
+        print(f"[lifespan] Seed-check query failed: {e}", flush=True)
+    if not seeded:
+        print("[lifespan] Database empty; running orchestrator seed pipeline...", flush=True)
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        orch_path = os.path.join(project_root, "orchestrator", "orchestrator.py")
+        if os.path.exists(orch_path):
+            try:
+                r = subprocess.run(
+                    [sys.executable, orch_path],
+                    capture_output=True, text=True, timeout=240, cwd=project_root,
+                )
+                if r.returncode != 0:
+                    print(f"[lifespan] Seed failed (exit {r.returncode}). stderr tail: {r.stderr[-800:]}", flush=True)
+                else:
+                    print("[lifespan] Seed complete.", flush=True)
+            except subprocess.TimeoutExpired:
+                print("[lifespan] Seed timed out after 240s.", flush=True)
+            except Exception as e:
+                print(f"[lifespan] Seed subprocess error: {e}", flush=True)
+        else:
+            print(f"[lifespan] orchestrator.py not present at {orch_path}; skipping seed.", flush=True)
+    else:
+        print("[lifespan] Database already seeded; skipping.", flush=True)
+    yield
+
+app = FastAPI(
+    title="Fundamental Analysis Platform",
+    description="Real-time stock analysis with live market data",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,

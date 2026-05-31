@@ -20,8 +20,9 @@ COPY orchestrator/ ./orchestrator/
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=4 \
-  CMD curl -fsS http://127.0.0.1:8000/api/market-status || exit 1
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=6 \
+  CMD curl -fsS http://127.0.0.1:${PORT:-8000}/api/market-status || exit 1
 
-# Local default; on Render/Railway $PORT is injected and overridden via startCommand.
-CMD ["uvicorn", "agents.dashboard.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Shell-form CMD so $PORT expands at runtime (Render/Railway inject it).
+# Falls back to 8000 locally where $PORT is unset.
+CMD uvicorn agents.dashboard.app:app --host 0.0.0.0 --port ${PORT:-8000}
