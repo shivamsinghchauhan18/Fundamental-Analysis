@@ -859,20 +859,196 @@ defineFn('COMP', 'Comparison',
   }
 );
 
-// ---- STAT — Statistical Foundation (pipeline data) ----
-defineFn('STAT', 'Statistical Foundation',
+// ---- STAT — Live Statistical Foundation (any ticker) ----
+function renderStatPanel(panel, idx, period) {
+  const d = panel.data;
+  if (!d || !d.ticker) { setPanelBody(idx, '<div class="muted" style="padding:12px;">No data.</div>'); return; }
+  const r = d.returns_summary;
+  const t = d.tests;
+  const jb = t.jarque_bera || {};
+  const sw = t.shapiro_wilk;
+  const adf = t.adf || {};
+
+  const mkBtn = (active, onClick, label) => `<button class="fn-code-btn" style="${active ? 'color:var(--amber);background:var(--amber-bg);border-color:var(--border-amber);' : ''}" onclick="${onClick}">${label}</button>`;
+  const periodBtns = ['3mo','6mo','1y','2y','5y'].map(p => mkBtn(p === period, `statReload(${idx},'${p}')`, p.toUpperCase())).join('');
+
+  const controls = `
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px;font-size:10px;">
+      <span class="muted">PERIOD:</span>${periodBtns}
+      <span class="muted" style="margin-left:8px;">${d.first_date} → ${d.last_date} · ${d.observations} obs</span>
+    </div>`;
+
+  // Summary stats card
+  const summary = `
+    <div class="t-section-title">${d.ticker} · Daily Log-Return Moments</div>
+    <div class="kv-list">
+      <div class="kv-k">Annualized Mean</div><div class="kv-v ${r.annualized_mean_pct >= 0 ? 'pos' : 'neg'}">${r.annualized_mean_pct >= 0 ? '+' : ''}${fmt.num(r.annualized_mean_pct, 2)}%</div>
+      <div class="kv-k">Annualized Vol</div><div class="kv-v amber">${fmt.num(r.annualized_vol_pct, 2)}%</div>
+      <div class="kv-k">Daily Mean (log)</div><div class="kv-v">${fmt.num(r.mean_daily_log, 5)}</div>
+      <div class="kv-k">Daily Std (log)</div><div class="kv-v">${fmt.num(r.std_dev_daily, 5)}</div>
+      <div class="kv-k">Skewness</div><div class="kv-v ${Math.abs(r.skewness) > 0.5 ? 'amber' : ''}">${r.skewness >= 0 ? '+' : ''}${fmt.num(r.skewness, 3)}</div>
+      <div class="kv-k">Excess Kurtosis</div><div class="kv-v ${r.excess_kurtosis > 1 ? 'amber' : ''}">${r.excess_kurtosis >= 0 ? '+' : ''}${fmt.num(r.excess_kurtosis, 3)}</div>
+      <div class="kv-k">Min daily return</div><div class="kv-v neg">${fmt.num(r.min * 100, 2)}%</div>
+      <div class="kv-k">Max daily return</div><div class="kv-v pos">+${fmt.num(r.max * 100, 2)}%</div>
+    </div>`;
+
+  // Hypothesis tests table
+  const swRow = sw ? `<tr><td>Shapiro-Wilk</td><td class="num">${fmt.num(sw.statistic, 4)}</td><td class="num">${fmt.num(sw.p_value, 4)}</td><td class="${sw.reject_normal_at_5pct ? 'neg' : 'pos'}">${sw.reject_normal_at_5pct ? 'REJECT Normal' : 'CANNOT REJECT'}</td></tr>` : '';
+  const adfRow = adf.statistic != null ? `<tr><td>ADF (Dickey-Fuller)</td><td class="num">${fmt.num(adf.statistic, 4)}</td><td class="num">~${fmt.num(adf.p_value_approx, 3)}</td><td class="${adf.is_stationary_at_5pct ? 'pos' : 'neg'}">${adf.is_stationary_at_5pct ? 'STATIONARY' : 'UNIT ROOT (non-stationary)'}</td></tr>` : '';
+
+  const tests = `
+    <div class="t-section-title">Hypothesis Tests</div>
+    <table class="t-table">
+      <thead><tr><th>TEST</th><th class="num">STAT</th><th class="num">p</th><th>VERDICT</th></tr></thead>
+      <tbody>
+        <tr><td>Jarque-Bera (skew+kurt vs Normal)</td><td class="num">${fmt.num(jb.statistic, 4)}</td><td class="num">${fmt.num(jb.p_value, 4)}</td><td class="${jb.reject_normal_at_5pct ? 'neg' : 'pos'}">${jb.reject_normal_at_5pct ? 'REJECT Normal' : 'CANNOT REJECT'}</td></tr>
+        ${swRow}
+        ${adfRow}
+      </tbody>
+    </table>
+    <div class="muted tiny" style="margin-top:4px;line-height:1.45;">
+      <b>Distribution label:</b> <span class="amber" style="font-weight:700;">${escapeHTML(d.distribution_label)}</span>.
+      JB / SW test Normality of returns; ADF tests stationarity of the price series (rejecting unit root → stationary).
+      ADF p-value here is interpolated from MacKinnon critical values (no scipy/statsmodels dependency).
+    </div>`;
+
+  // Outliers panel
+  const o = d.outliers;
+  const outliers = `
+    <div class="t-section-title">Tail / Outliers</div>
+    <div class="kv-list">
+      <div class="kv-k">Method</div><div class="kv-v">${escapeHTML(o.method)}</div>
+      <div class="kv-k">Count</div><div class="kv-v amber">${o.count} (${fmt.num(o.pct, 2)}%)</div>
+      <div class="kv-k">Expected under Normal</div><div class="kv-v muted">~0.27%</div>
+    </div>
+    <div class="muted tiny" style="margin-top:4px;">A Normal distribution predicts ~0.27% of daily returns beyond ±3σ. Higher empirical fraction = fat-tailed.</div>`;
+
+  setPanelBody(idx, `
+    ${controls}
+    ${summary}
+    ${tests}
+    ${outliers}
+    <div class="t-section-title">Returns Distribution vs Normal Overlay</div>
+    <div class="chart-host" id="stat-hist-${idx}" style="height:220px;"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div>
+        <div class="t-section-title">Q-Q Plot (Normality)</div>
+        <div class="chart-host" id="stat-qq-${idx}" style="height:220px;"></div>
+        <div class="muted tiny">Points on the diagonal = Normal. Heavy fat tails curve <b>upward</b> at the right and <b>downward</b> at the left.</div>
+      </div>
+      <div>
+        <div class="t-section-title">Autocorrelation (ACF, lags 1–${d.acf.lags.length})</div>
+        <div class="chart-host" id="stat-acf-${idx}" style="height:220px;"></div>
+        <div class="muted tiny">Bars beyond the dashed ±${fmt.num(d.acf.confidence_band_95, 3)} band reject white-noise at 95%.</div>
+      </div>
+    </div>
+  `);
+
+  const baseDark = (h) => ({
+    chart: { height: h, background: 'transparent', toolbar: { show: false }, animations: { enabled: false }, foreColor: '#8a8a8a', fontFamily: 'JetBrains Mono, monospace' },
+    grid: { borderColor: '#1a1a1a' },
+    xaxis: { labels: { style: { fontSize: '9px' } }, axisBorder: { color: '#2a2a2a' } },
+    yaxis: { labels: { style: { fontSize: '9px' } } },
+    tooltip: { theme: 'dark' },
+    legend: { fontSize: '9px', labels: { colors: '#e8e8e8' } },
+  });
+
+  // Histogram + normal overlay
+  panel.charts.hist = new ApexCharts(document.getElementById(`stat-hist-${idx}`), {
+    ...baseDark(220),
+    series: [
+      { name: 'Returns count', type: 'column', data: d.histogram.bin_centers.map((x, i) => ({ x: (x * 100).toFixed(2) + '%', y: d.histogram.counts[i] })) },
+      { name: 'Normal expected', type: 'line', data: d.histogram.bin_centers.map((x, i) => ({ x: (x * 100).toFixed(2) + '%', y: d.histogram.normal_overlay[i] })) },
+    ],
+    chart: { ...baseDark(220).chart, type: 'line' },
+    colors: ['#ff9900', '#4dafff'],
+    stroke: { width: [0, 2], curve: 'smooth' },
+    plotOptions: { bar: { columnWidth: '95%' } },
+    xaxis: { ...baseDark().xaxis, type: 'category', labels: { ...baseDark().xaxis.labels, rotate: -45, hideOverlappingLabels: true } },
+    dataLabels: { enabled: false },
+    legend: { ...baseDark().legend, show: true, position: 'top' },
+  });
+  panel.charts.hist.render();
+
+  // Q-Q plot
+  panel.charts.qq = new ApexCharts(document.getElementById(`stat-qq-${idx}`), {
+    ...baseDark(220),
+    series: [{ name: 'Sample vs Normal', data: d.qq_plot.theoretical.map((x, i) => [x, d.qq_plot.sample[i]]) }],
+    chart: { ...baseDark(220).chart, type: 'scatter', zoom: { enabled: false } },
+    colors: ['#ff9900'],
+    markers: { size: 3 },
+    xaxis: { ...baseDark().xaxis, type: 'numeric', title: { text: 'Theoretical (Normal quantile)', style: { fontSize: '9px', color: '#8a8a8a' } } },
+    yaxis: { ...baseDark().yaxis, title: { text: 'Sample (log return)', style: { fontSize: '9px', color: '#8a8a8a' } } },
+    legend: { show: false },
+    annotations: (() => {
+      // Reference line y = mean + std * x (Normal). Compute endpoints.
+      const xmin = Math.min(...d.qq_plot.theoretical);
+      const xmax = Math.max(...d.qq_plot.theoretical);
+      return { points: [], xaxis: [{ x: 0, borderColor: '#3a3a3a', strokeDashArray: 4 }], yaxis: [{ y: 0, borderColor: '#3a3a3a', strokeDashArray: 4 }] };
+    })(),
+  });
+  panel.charts.qq.render();
+
+  // ACF
+  panel.charts.acf = new ApexCharts(document.getElementById(`stat-acf-${idx}`), {
+    ...baseDark(220),
+    series: [{ name: 'ACF', data: d.acf.values.map((v, i) => ({ x: d.acf.lags[i], y: v, fillColor: Math.abs(v) > d.acf.confidence_band_95 ? '#ff9900' : '#4dafff' })) }],
+    chart: { ...baseDark(220).chart, type: 'bar' },
+    plotOptions: { bar: { columnWidth: '50%', distributed: true } },
+    dataLabels: { enabled: false },
+    xaxis: { ...baseDark().xaxis, type: 'numeric', title: { text: 'lag', style: { fontSize: '9px', color: '#8a8a8a' } } },
+    yaxis: { ...baseDark().yaxis, min: -1, max: 1 },
+    legend: { show: false },
+    annotations: {
+      yaxis: [
+        { y: d.acf.confidence_band_95, borderColor: 'rgba(255,153,0,0.5)', strokeDashArray: 2 },
+        { y: -d.acf.confidence_band_95, borderColor: 'rgba(255,153,0,0.5)', strokeDashArray: 2 },
+      ],
+    },
+  });
+  panel.charts.acf.render();
+}
+
+defineFn('STAT', 'Live Statistical Foundation',
+  async (t) => {
+    if (!t || t === '—') throw new Error('STAT needs a ticker. Try: AAPL STAT (or any symbol).');
+    return api(`/api/statistical/${t}?period=1y`);
+  },
+  (panel, idx) => {
+    panel._statPeriod = panel._statPeriod || (panel.data && panel.data.period) || '1y';
+    renderStatPanel(panel, idx, panel._statPeriod);
+  }
+);
+
+window.statReload = async function(idx, period) {
+  const p = STATE.panels[idx];
+  if (!p || !p.ticker) return;
+  setPanelBody(idx, '<div class="loader-inline">LOADING</div>');
+  destroyPanelCharts(p);
+  try {
+    const d = await api(`/api/statistical/${p.ticker}?period=${period}`);
+    p.data = d;
+    p._statPeriod = period;
+    renderStatPanel(p, idx, period);
+  } catch (e) {
+    setPanelBody(idx, `<div class="panel-empty"><div class="big" style="color:var(--red);">ERROR</div><div class="hint">${escapeHTML(e.message)}</div></div>`);
+  }
+};
+
+// Legacy pipeline overview preserved as STATP
+defineFn('STATP', 'Pipeline Statistical Foundation (TSLA/NVDA/PLTR)',
   async (t) => {
     const all = await api('/api/statistical-foundation');
     if (!t) return { all };
     const match = all.find(x => x.company === t.toUpperCase());
-    if (!match) throw new Error(`STAT data only for TSLA/NVDA/PLTR. Try: TSLA STAT`);
+    if (!match) throw new Error(`STATP only has TSLA/NVDA/PLTR. Use STAT <ticker> for any other.`);
     return { single: match };
   },
   (panel, idx) => {
     const d = panel.data;
     if (d.all && !d.single) {
       const html = `
-        <div class="t-section-title">Statistical Foundation · All Companies</div>
+        <div class="t-section-title">Pipeline Statistical Foundation · TSLA / NVDA / PLTR</div>
         <table class="t-table">
           <thead><tr><th>SYM</th><th class="num">MEAN</th><th class="num">STD</th><th class="num">SKEW</th><th class="num">KURT</th><th class="num">JB p</th><th>DIST</th><th>STATIONARY</th></tr></thead>
           <tbody>
@@ -888,13 +1064,13 @@ defineFn('STAT', 'Statistical Foundation',
             </tr>`).join('')}
           </tbody>
         </table>
-        <div class="muted" style="margin-top:8px;font-size:10.5px;">Click a row to drill into a single ticker.</div>`;
+        <div class="muted" style="margin-top:8px;font-size:10.5px;">Click a row to drill into a live single-ticker STAT panel.</div>`;
       setPanelBody(idx, html);
       return;
     }
     const s = d.single;
     setPanelBody(idx, `
-      <div class="t-section-title">${s.company} · Statistical Foundation</div>
+      <div class="t-section-title">${s.company} · Pipeline Statistical Foundation</div>
       <div class="kv-list">
         <div class="kv-k">Mean</div><div class="kv-v">${fmt.num(s.mean)}</div>
         <div class="kv-k">Median</div><div class="kv-v">${fmt.num(s.median)}</div>
@@ -909,6 +1085,7 @@ defineFn('STAT', 'Statistical Foundation',
         <div class="kv-k">Imputed %</div><div class="kv-v">${fmt.num(s.missing_values_pct)}%</div>
         <div class="kv-k">Outliers</div><div class="kv-v">${s.outliers_detected}</div>
       </div>
+      <div class="muted tiny" style="margin-top:6px;">Use <code>${s.company} STAT</code> for the live multi-chart panel (histogram, Q-Q, ACF).</div>
     `);
   }
 );

@@ -900,6 +900,218 @@ def correlation_matrix(
     return cached_fetch(cache_key, _fetch, ttl=600)
 
 # ---------------------------------------------------------------------------
+# NEW: Live Statistical Foundation (any ticker)
+#     Distribution moments, normality tests, ADF (hand-rolled), histogram,
+#     Q-Q plot, ACF — all computed on demand from yfinance daily log returns.
+# ---------------------------------------------------------------------------
+def _adf_simple(series):
+    """Basic Dickey-Fuller test (no augmentation). Returns (t_stat, approx_p, is_stationary).
+    Regression: ΔY_t = α + β·Y_{t-1} + ε. Null β = 0 (unit root, non-stationary).
+    Critical values from MacKinnon (1991) asymptotic (with constant, no trend):
+        1%  : -3.43
+        5%  : -2.86
+        10% : -2.57
+    p-value is interpolated linearly between these anchors (rough but informative).
+    """
+    import numpy as np
+    y = np.asarray(series, dtype=float)
+    if y.size < 10:
+        return None, None, None
+    dy = np.diff(y)
+    y_lag = y[:-1]
+    n = len(dy)
+    X = np.column_stack([np.ones(n), y_lag])
+    try:
+        coefs, *_ = np.linalg.lstsq(X, dy, rcond=None)
+    except Exception:
+        return None, None, None
+    fitted = X @ coefs
+    resid = dy - fitted
+    rss = float(np.sum(resid ** 2))
+    dof = n - 2
+    if dof <= 0:
+        return None, None, None
+    sigma2 = rss / dof
+    var_y_lag = float(np.sum((y_lag - y_lag.mean()) ** 2))
+    if var_y_lag <= 0:
+        return None, None, None
+    se_b = (sigma2 / var_y_lag) ** 0.5
+    if se_b == 0:
+        return None, None, None
+    t_stat = float(coefs[1] / se_b)
+    # Piecewise-linear p-value approximation (MacKinnon critical values, drift-only case)
+    if   t_stat <= -3.43: approx_p = 0.01
+    elif t_stat <= -2.86: approx_p = 0.01 + (t_stat - (-3.43)) / ((-2.86) - (-3.43)) * (0.05 - 0.01)
+    elif t_stat <= -2.57: approx_p = 0.05 + (t_stat - (-2.86)) / ((-2.57) - (-2.86)) * (0.10 - 0.05)
+    elif t_stat <= -1.62: approx_p = 0.10 + (t_stat - (-2.57)) / ((-1.62) - (-2.57)) * (0.50 - 0.10)
+    elif t_stat <=  0.00: approx_p = 0.50 + (t_stat - (-1.62)) / ((0.00) - (-1.62)) * (0.80 - 0.50)
+    else:                 approx_p = min(0.99, 0.80 + t_stat * 0.05)
+    is_stationary = approx_p < 0.05
+    return round(t_stat, 4), round(approx_p, 4), bool(is_stationary)
+
+
+@app.get("/api/statistical/{ticker}")
+def statistical_foundation_live(ticker: str, period: str = Query("1y")):
+    ticker = ticker.upper().strip()
+    if not ticker or len(ticker) > 10:
+        raise HTTPException(status_code=400, detail="Invalid ticker symbol")
+    if period not in {"3mo", "6mo", "1y", "2y", "5y"}:
+        raise HTTPException(status_code=400, detail="Invalid period")
+
+    def _fetch():
+        import yfinance as yf
+        import numpy as np
+        from scipy import stats as sp_stats
+
+        t = yf.Ticker(ticker)
+        hist = t.history(period=period, interval="1d")
+        if hist.empty:
+            raise HTTPException(status_code=404, detail=f"No data for {ticker}")
+        prices = hist["Close"].dropna().to_numpy(dtype=float)
+        if prices.size < 20:
+            raise HTTPException(status_code=400, detail=f"Only {prices.size} obs; need >= 20")
+
+        log_returns = np.diff(np.log(prices))
+        n = log_returns.size
+
+        # Moments
+        mean = float(np.mean(log_returns))
+        median = float(np.median(log_returns))
+        std = float(np.std(log_returns, ddof=1))
+        skew = float(sp_stats.skew(log_returns, bias=False))
+        kurt = float(sp_stats.kurtosis(log_returns, fisher=True, bias=False))  # excess kurt
+
+        # Jarque-Bera
+        jb_stat, jb_p = sp_stats.jarque_bera(log_returns)
+        jb_stat = float(jb_stat); jb_p = float(jb_p)
+        # Shapiro-Wilk (capped at 5000 for scipy)
+        try:
+            sw_stat, sw_p = sp_stats.shapiro(log_returns[:5000])
+            sw_stat = float(sw_stat); sw_p = float(sw_p)
+        except Exception:
+            sw_stat = None; sw_p = None
+        # ADF on PRICES (not returns) — standard convention
+        adf_stat, adf_p, adf_stationary = _adf_simple(prices)
+
+        # Distribution classification (rule-based label)
+        labels = []
+        if jb_p < 0.05: labels.append("non-Normal")
+        else: labels.append("Normal-like")
+        if abs(skew) > 0.5: labels.append("left-skew" if skew < 0 else "right-skew")
+        if kurt > 1.0: labels.append("fat-tailed")
+        elif kurt < -1.0: labels.append("thin-tailed")
+        dist_label = ", ".join(labels)
+
+        # Outliers (3σ on log returns)
+        z = (log_returns - mean) / std if std > 0 else np.zeros_like(log_returns)
+        outlier_mask = np.abs(z) > 3.0
+        outlier_count = int(outlier_mask.sum())
+        outlier_indices = np.where(outlier_mask)[0].tolist()
+
+        # Histogram of returns (40 bins). Also emit normal-PDF overlay points.
+        hist_counts, bin_edges = np.histogram(log_returns, bins=40)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+        # Normal PDF scaled to same y-axis as the count histogram
+        bin_width = float(bin_edges[1] - bin_edges[0])
+        if std > 0:
+            norm_pdf = (1.0 / (std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((bin_centers - mean) / std) ** 2)
+            norm_overlay = (norm_pdf * n * bin_width).tolist()
+        else:
+            norm_overlay = [0.0] * len(bin_centers)
+
+        # Q-Q plot: theoretical normal quantiles vs sorted standardized returns
+        sorted_ret = np.sort(log_returns)
+        probs = (np.arange(1, n + 1) - 0.5) / n
+        theoretical = sp_stats.norm.ppf(probs)
+        # Downsample for chart sanity
+        if n > 250:
+            step = n // 200
+            theoretical_ds = theoretical[::step].tolist()
+            sample_ds = sorted_ret[::step].tolist()
+        else:
+            theoretical_ds = theoretical.tolist()
+            sample_ds = sorted_ret.tolist()
+
+        # ACF (autocorrelation) up to lag 30 — pure numpy
+        max_lag = min(30, n // 4)
+        ret_centered = log_returns - mean
+        denom = float(np.sum(ret_centered ** 2))
+        acf_vals = []
+        for lag in range(1, max_lag + 1):
+            num = float(np.sum(ret_centered[lag:] * ret_centered[:-lag]))
+            acf_vals.append(round(num / denom if denom > 0 else 0.0, 4))
+        # Bartlett 95% confidence band for white noise: ±1.96/√n
+        acf_band = round(1.96 / (n ** 0.5), 4)
+
+        return {
+            "ticker": ticker,
+            "period": period,
+            "observations": int(n),
+            "first_date": hist.index[0].strftime("%Y-%m-%d"),
+            "last_date": hist.index[-1].strftime("%Y-%m-%d"),
+            "price_summary": {
+                "first": round(float(prices[0]), 2),
+                "last": round(float(prices[-1]), 2),
+                "min": round(float(prices.min()), 2),
+                "max": round(float(prices.max()), 2),
+                "mean": round(float(prices.mean()), 2),
+            },
+            "returns_summary": {
+                "mean_daily_log": round(mean, 6),
+                "annualized_mean_pct": round(mean * 252 * 100, 2),
+                "median": round(median, 6),
+                "std_dev_daily": round(std, 6),
+                "annualized_vol_pct": round(std * (252 ** 0.5) * 100, 2),
+                "skewness": round(skew, 4),
+                "excess_kurtosis": round(kurt, 4),
+                "min": round(float(log_returns.min()), 6),
+                "max": round(float(log_returns.max()), 6),
+            },
+            "tests": {
+                "jarque_bera": {
+                    "statistic": round(jb_stat, 4),
+                    "p_value": round(jb_p, 6),
+                    "reject_normal_at_5pct": bool(jb_p < 0.05),
+                },
+                "shapiro_wilk": (
+                    {"statistic": round(sw_stat, 4), "p_value": round(sw_p, 6),
+                     "reject_normal_at_5pct": bool(sw_p < 0.05)}
+                    if sw_stat is not None else None
+                ),
+                "adf": {
+                    "statistic": adf_stat,
+                    "p_value_approx": adf_p,
+                    "is_stationary_at_5pct": adf_stationary,
+                    "note": "Simple DF (no augmentation); p-value interpolated from MacKinnon critical values.",
+                },
+            },
+            "distribution_label": dist_label,
+            "outliers": {
+                "method": "3-sigma on log returns",
+                "count": outlier_count,
+                "pct": round(100.0 * outlier_count / n, 2),
+                "indices": outlier_indices[:50],
+            },
+            "histogram": {
+                "bin_centers": [round(float(x), 5) for x in bin_centers.tolist()],
+                "counts": [int(c) for c in hist_counts.tolist()],
+                "normal_overlay": [round(float(x), 3) for x in norm_overlay],
+            },
+            "qq_plot": {
+                "theoretical": [round(float(x), 4) for x in theoretical_ds],
+                "sample": [round(float(x), 6) for x in sample_ds],
+            },
+            "acf": {
+                "lags": list(range(1, max_lag + 1)),
+                "values": acf_vals,
+                "confidence_band_95": acf_band,
+            },
+        }
+
+    return cached_fetch(f"stat_live_{ticker}_{period}", _fetch, ttl=600)
+
+
+# ---------------------------------------------------------------------------
 # NEW: Asset Correlation Network (Mantegna-style)
 #     Method = MST | threshold | kNN
 #     Community detection via greedy modularity
