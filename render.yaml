@@ -1,0 +1,46 @@
+# Render Blueprint — one-click deploy for the Fundamental Terminal
+# Deploy: https://render.com/deploy?repo=https://github.com/shivamsinghchauhan18/Fundamental-Analysis
+#
+# Provisions:
+#   - A managed PostgreSQL instance (free tier; auto-expires after 90 days)
+#   - One web service running the FastAPI dashboard via Docker
+#   - On every deploy, preDeployCommand runs the full 10-agent seed pipeline
+#     so STAT / CORRP / MACRO / MC / GRAPHP / PEER / EVTS function codes
+#     have their TSLA/NVDA/PLTR analytics data populated.
+#
+# Free-tier caveats to share with students:
+#   - Web service sleeps after 15 min of inactivity; first request after a
+#     sleep takes ~30-60 s while the container cold-starts.
+#   - Free PostgreSQL is deleted after 90 days. Re-deploy (or upgrade the
+#     plan) before the expiry to keep data persistent.
+
+databases:
+  - name: fundamental-db
+    plan: free
+    databaseName: fundamental_db
+    user: fundamental_user
+
+services:
+  - type: web
+    name: fundamental-terminal
+    runtime: docker
+    plan: free
+    dockerfilePath: ./agents/dashboard/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/market-status
+    autoDeploy: true
+
+    # Render injects $PORT; override the Dockerfile CMD to bind to it.
+    startCommand: uvicorn agents.dashboard.app:app --host 0.0.0.0 --port $PORT
+
+    # Seeds Postgres with the full pipeline analytics on every deploy.
+    # Idempotent: drops + recreates the TSLA/NVDA/PLTR analytics tables.
+    preDeployCommand: python orchestrator/orchestrator.py
+
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: fundamental-db
+          property: connectionString
+      - key: PYTHONUNBUFFERED
+        value: "1"
